@@ -1,4 +1,5 @@
-﻿using System;
+﻿using FineCodeCoverage.Options;
+using System;
 using System.ComponentModel.Composition;
 using System.IO;
 using System.Linq;
@@ -11,13 +12,15 @@ namespace FineCodeCoverage.Engine
     {
         private readonly ILogger logger;
         private readonly IEnvironmentVariable environmentVariable;
+        private readonly IAppOptionsProvider appOptionsProvider;
         internal const string fccDebugCleanInstallEnvironmentVariable = "FCCDebugCleanInstall";
 
         [ImportingConstructor]
-        public AppDataFolder(ILogger logger,IEnvironmentVariable environmentVariable)
+        public AppDataFolder(ILogger logger,IEnvironmentVariable environmentVariable, IAppOptionsProvider appOptionsProvider)
         {
             this.logger = logger;
             this.environmentVariable = environmentVariable;
+            this.appOptionsProvider = appOptionsProvider;
         }
         public string DirectoryPath { get; private set; }
 
@@ -31,7 +34,7 @@ namespace FineCodeCoverage.Engine
 
         private void CreateAppDataFolder()
         {
-            DirectoryPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Vsix.Code);
+            DirectoryPath = Path.Combine(GetAppDataFolder(), Vsix.Code);
             if (environmentVariable.Get(fccDebugCleanInstallEnvironmentVariable) != null)
             {
                 logger.Log("FCCDebugCleanInstall");
@@ -53,6 +56,13 @@ namespace FineCodeCoverage.Engine
                 }
             }
             Directory.CreateDirectory(DirectoryPath);
+        }
+
+        private string GetAppDataFolder()
+        {
+            var dir = appOptionsProvider.Get().ToolsDirectory;
+
+            return Directory.Exists(dir) ? dir : Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         }
 
         private void CleanupLegacyFolders()

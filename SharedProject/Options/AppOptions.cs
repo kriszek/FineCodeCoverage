@@ -115,6 +115,10 @@ namespace FineCodeCoverage.Options
         [Category(runCategory)]
         public int RunWhenTestsExceed { get; set; }
 
+        [Description("Tools Directory")]
+        [Category(runCategory)]
+        public string ToolsDirectory { get; set; }
+
         [Description("Specify false for global and project options to be used for coverlet data collector configuration elements when not specified in runsettings")]
         [Category(coverletCategory)]
         public bool RunSettingsOnly { get; set; } = true;
