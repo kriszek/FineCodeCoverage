@@ -9,6 +9,7 @@ namespace FineCodeCoverage.Options
     internal class AppOptions : DialogPage, IAppOptions
     {
         private const string runCategory = "Run";
+        private const string environmentCategory = "Environment";
         private const string excludeIncludeCategory = "Exclude / Include";
         private const string coverletCategory = "Coverlet";
         private const string openCoverCategory = "OpenCover";
@@ -115,8 +116,8 @@ namespace FineCodeCoverage.Options
         [Category(runCategory)]
         public int RunWhenTestsExceed { get; set; }
 
-        [Description("Tools Directory")]
-        [Category(runCategory)]
+        [Description("Folder to which copy subfolder with all the tools. Must alredy exist. Requires restart of VS.")]
+        [Category(environmentCategory)]
         public string ToolsDirectory { get; set; }
 
         [Description("Specify false for global and project options to be used for coverlet data collector configuration elements when not specified in runsettings")]
