@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using Task = System.Threading.Tasks.Task;
 using System.Windows;
 using ExCSS;
 using FineCodeCoverage.Core.Utilities;
@@ -16,24 +17,24 @@ using Microsoft.VisualStudio.Shell;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using ReportGeneratorPlugins;
+using System.Threading;
 
 namespace FineCodeCoverage.Engine.ReportGenerator
 {
 	interface IReportGeneratorUtil
     {
-        void Initialize(string appDataFolder);
+        void Initialize(string appDataFolder, CancellationToken cancellationToken);
 		string ProcessUnifiedHtml(string htmlForProcessing,string reportOutputFolder);
-		Task<ReportGeneratorResult> GenerateAsync(IEnumerable<string> coverOutputFiles,string reportOutputFolder, bool throwError = false);
+		Task<ReportGeneratorResult> GenerateAsync(IEnumerable<string> coverOutputFiles,string reportOutputFolder,CancellationToken cancellationToken);
         string BlankReport(bool withHistory);
-        System.Threading.Tasks.Task LogCoverageProcessAsync(string message);
-		System.Threading.Tasks.Task EndOfCoverageRunAsync();
+        void LogCoverageProcess(string message);
+		void EndOfCoverageRun();
     }
 
     internal class ReportGeneratorResult
 	{
 		public string UnifiedHtml { get; set; }
 		public string UnifiedXmlFile { get; set; }
-		public bool Success { get; set; }
 	}
 
 	[Export(typeof(IReportGeneratorUtil))]
@@ -83,7 +84,7 @@ namespace FineCodeCoverage.Engine.ReportGenerator
             }
         }
 		private readonly bool showBranchCoverage = true;
-		private List<string> logs = new List<string>();
+		private readonly List<string> logs = new List<string>();
 
 		public string ReportGeneratorExePath { get; private set; }
 
@@ -124,24 +125,24 @@ namespace FineCodeCoverage.Engine.ReportGenerator
             scriptManager.ShowFCCOutputPaneEvent += ScriptManager_ShowFCCOutputPaneEvent;
         }
 
-        private async void ScriptManager_ShowFCCOutputPaneEvent(object sender, EventArgs e)
+        private void ScriptManager_ShowFCCOutputPaneEvent(object sender, EventArgs e)
         {
-			await showFCCOutputPane.ShowAsync();
+            _ = ThreadHelper.JoinableTaskFactory.RunAsync(() => showFCCOutputPane.ShowAsync());
         }
 
-        private void ScriptManager_ClearFCCWindowLogsEvent(object sender, EventArgs e)
+		private void ScriptManager_ClearFCCWindowLogsEvent(object sender, EventArgs e)
         {
 			logs.Clear();
         }
 
-        public void Initialize(string appDataFolder)
+        public void Initialize(string appDataFolder, CancellationToken cancellationToken)
 		{
-			var zipDestination = toolFolder.EnsureUnzipped(appDataFolder, zipDirectoryName, toolZipProvider.ProvideZip(zipPrefix));
+			var zipDestination = toolFolder.EnsureUnzipped(appDataFolder, zipDirectoryName, toolZipProvider.ProvideZip(zipPrefix), cancellationToken);
 			ReportGeneratorExePath = Directory.GetFiles(zipDestination, "reportGenerator.exe", SearchOption.AllDirectories).FirstOrDefault()
 								  ?? Directory.GetFiles(zipDestination, "*reportGenerator*.exe", SearchOption.AllDirectories).FirstOrDefault();
 		}
 
-		public async Task<ReportGeneratorResult> GenerateAsync(IEnumerable<string> coverOutputFiles, string reportOutputFolder, bool throwError = false)
+		public async Task<ReportGeneratorResult> GenerateAsync(IEnumerable<string> coverOutputFiles, string reportOutputFolder, CancellationToken cancellationToken)
 		{
 			var title = "ReportGenerator Run";
 
@@ -152,7 +153,7 @@ namespace FineCodeCoverage.Engine.ReportGenerator
 
 			reportGeneratorSettings.Add($@"""-targetdir:{reportOutputFolder}""");
 
-			async Task<bool> run(string outputReportType, string inputReports)
+			async Task run(string outputReportType, string inputReports)
 			{
 				var reportTypeSettings = reportGeneratorSettings.ToArray().ToList();
 
@@ -187,59 +188,40 @@ namespace FineCodeCoverage.Engine.ReportGenerator
 						FilePath = ReportGeneratorExePath,
 						Arguments = string.Join(" ", reportTypeSettings),
 						WorkingDirectory = reportOutputFolder
-					});
+					},cancellationToken);
 
 
-				if (result != null)
+				if (result.ExitCode != 0)
 				{
-					if (result.ExitCode != 0)
-					{
-						logger.Log($"{title} [reporttype:{outputReportType}] Error", result.Output);
-						logger.Log($"{title} [reporttype:{outputReportType}] Error", result.ExitCode);
+					logger.Log($"{title} [reporttype:{outputReportType}] Error", result.Output, $"ExitCode : {result.ExitCode}");
 
-						if (throwError)
-						{
-							throw new Exception(result.Output);
-						}
-
-						return false;
-					}
-
-					logger.Log($"{title} [reporttype:{outputReportType}]", result.Output);
-					return true;
+					throw new Exception(result.Output);
 				}
-				return false;
+
+				logger.Log($"{title} [reporttype:{outputReportType}]", result.Output);
 
 			}
 
-			var reportGeneratorResult = new ReportGeneratorResult { Success = false, UnifiedHtml = null, UnifiedXmlFile = unifiedXmlFile };
+			var reportGeneratorResult = new ReportGeneratorResult { UnifiedHtml = null, UnifiedXmlFile = unifiedXmlFile };
 
 			var startTime = DateTime.Now;
-			await LogCoverageProcessAsync("Generating cobertura report");
-			var coberturaResult = await run("Cobertura", string.Join(";", coverOutputFiles));
+			LogCoverageProcess("Generating cobertura report");
+			await run("Cobertura", string.Join(";", coverOutputFiles));
 			var duration = DateTime.Now - startTime;
 
-			if (coberturaResult)
-			{
-				var coberturaDurationMesage = $"Cobertura report generation duration - {duration}";
-				await LogCoverageProcessAsync(coberturaDurationMesage); // result output includes duration for normal log
+			var coberturaDurationMesage = $"Cobertura report generation duration - {duration}";
+			LogCoverageProcess(coberturaDurationMesage); // result output includes duration for normal log
 
-				startTime = DateTime.Now;
-				await LogCoverageProcessAsync("Generating html report");
-				var htmlResult = await run("HtmlInline_AzurePipelines", unifiedXmlFile);
-				duration = DateTime.Now - startTime;
-				if (htmlResult)
-				{
-					var htmlReportDurationMessage = $"Html report generation duration - {duration}";
-					await LogCoverageProcessAsync(htmlReportDurationMessage); // result output includes duration for normal log
-					reportGeneratorResult.UnifiedHtml = fileUtil.ReadAllText(unifiedHtmlFile);
-					reportGeneratorResult.Success = true;
-				}
-
-            }
+			startTime = DateTime.Now;
+			LogCoverageProcess("Generating html report");
+			await run("HtmlInline_AzurePipelines", unifiedXmlFile);
+			duration = DateTime.Now - startTime;
+			cancellationToken.ThrowIfCancellationRequested();
+			var htmlReportDurationMessage = $"Html report generation duration - {duration}";
+			LogCoverageProcess(htmlReportDurationMessage); // result output includes duration for normal log
+			reportGeneratorResult.UnifiedHtml = fileUtil.ReadAllText(unifiedHtmlFile);
 
 			return reportGeneratorResult;
-
 		}
 
 		private void SetInitialTheme(HtmlAgilityPack.HtmlDocument document)
@@ -885,6 +867,16 @@ observer.observe(targetNode, config);
 			return $"{FontSize}{FontName}";
 		}
 
+		private string HideCyclomaticComplexityLink()
+        {
+			return @"
+risk-hotspots > div > table > thead > tr > th:last-of-type > a:last-of-type {
+		display:none
+}
+";
+
+		}
+
 		public string ProcessUnifiedHtml(string htmlForProcessing, string reportOutputFolder)
 		{
 			previousFontSizeName = GetFontNameSize();
@@ -1020,7 +1012,7 @@ observer.observe(targetNode, config);
 					table td {{ white-space: nowrap; }}
 					table.coverage {{ width:150px;height:13px }}
 					body {{ padding-left:3px;padding-right:3px;padding-bottom:3px }}
-					
+					{HideCyclomaticComplexityLink()}
 					body {{ -webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;-o-user-select:none;user-select:none }}
 					table.overview th, table.overview td {{ white-space: nowrap; word-break: normal; padding-left:10px;padding-right:10px; }}
 					{GetGroupingCss(namespacedClasses)}
@@ -1676,16 +1668,14 @@ observer.observe(targetNode, config);
 			return ProcessUnifiedHtml(resourceProvider.ReadResource("dummyReportToProcess.html"),null);
         }
 
-        public async System.Threading.Tasks.Task LogCoverageProcessAsync(string message)
+        public void LogCoverageProcess(string message)
         {
-			await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
 			eventAggregator.SendMessage(new InvokeScriptMessage(CoverageLogJSFunctionName, message));
 			logs.Add(message);
 		}
 
-        public async System.Threading.Tasks.Task EndOfCoverageRunAsync()
+        public void EndOfCoverageRun()
         {
-			await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
 			eventAggregator.SendMessage(new InvokeScriptMessage(ShowFCCWorkingJSFunctionName, false));
 		}
 		
